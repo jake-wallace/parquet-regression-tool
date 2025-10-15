@@ -114,3 +114,4 @@ class ReportGenerator:
             f.write(html_content)
 
         return report_path
+``
