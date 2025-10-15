@@ -1,4 +1,3 @@
-import pandas as pd
 from pathlib import Path
 import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -11,7 +10,7 @@ class ReportGenerator:
         self.file_before = file_before
         self.file_after = file_after
         self.output_dir = output_dir
-        self.results = results  # This can now be None
+        self.results = results
         self.inferred_keys = inferred_keys
         self.schema_diff = schema_diff
         self.summary = self._create_summary()

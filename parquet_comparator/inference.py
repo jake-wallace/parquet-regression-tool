@@ -32,7 +32,6 @@ def infer_datetime_columns(
     df: pd.DataFrame, sample_size: int = 1000, success_threshold: float = 0.9
 ) -> list[str]:
     """Infers which 'object' type columns are likely datetimes."""
-    # --- THIS IS THE CORRECTED LINE ---
     # Use the general 'datetime64' to be compatible with modern pandas versions.
     datetime_cols = list(df.select_dtypes(include=["datetime64"]).columns)
 
