@@ -1,0 +1,6 @@
+pandas
+pyarrow
+click
+PyYAML
+Jinja2
+numpy

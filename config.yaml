@@ -1,0 +1,28 @@
+# --- Paths Configuration ---
+# The base directories containing the parquet files to compare.
+# The tool will mirror the folder structure from 'before' to 'after'.
+base_path_before: "./data/before"
+base_path_after: "./data/after"
+
+# Where to save generated reports and the tracking database.
+output_directory: "./reports"
+
+
+# === Global Comparison Settings ===
+
+# Global tolerance for comparing floating-point numbers.
+float_tolerance: 1.0e-6
+
+# A list of common column names to ignore across ALL files.
+global_ignore_columns: []
+
+
+# === Global Inference Settings ===
+
+# A column is considered a candidate for a unique sort key if its uniqueness
+# ratio (unique_values / total_rows) is at or above this value.
+key_uniqueness_threshold: 0.99
+
+# A string column is inferred as a datetime column if this percentage of a
+# sample can be successfully parsed as a date.
+datetime_parse_threshold: 0.9
