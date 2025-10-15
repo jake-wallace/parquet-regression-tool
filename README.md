@@ -35,7 +35,8 @@ This tool is designed to be generic and scalable, requiring no prior knowledge o
 
 ```bash
 git clone https://github.com/jake-wallace/parquet-regression-tool.git
-cd parquet-regression-tool```
+cd parquet-regression-tool
+```
 
 ### 2. Set Up a Virtual Environment
 
