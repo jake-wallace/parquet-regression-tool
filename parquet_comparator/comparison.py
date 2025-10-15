@@ -17,11 +17,9 @@ def compare_dataframes(
     """
     Compares two dataframes, categorizing differences into added, deleted, and modified.
     """
-    if sort_keys:
-        df_before = df_before.set_index(sort_keys)
-        df_after = df_after.set_index(sort_keys)
+    df_before = df_before.set_index(sort_keys)
+    df_after = df_after.set_index(sort_keys)
 
-    # Outer join to find all differences
     merged = df_before.merge(
         df_after,
         how="outer",
@@ -31,7 +29,6 @@ def compare_dataframes(
         indicator=True,
     )
 
-    # Categorize Added and Deleted rows
     added = merged[merged["_merge"] == "right_only"].drop(
         columns=merged.filter(like="_before").columns.tolist() + ["_merge"]
     )
@@ -42,7 +39,6 @@ def compare_dataframes(
     )
     deleted.columns = deleted.columns.str.replace("_before$", "", regex=True)
 
-    # Identify Modified rows
     common = merged[merged["_merge"] == "both"].drop(columns=["_merge"])
     modified_rows = []
 
@@ -53,7 +49,11 @@ def compare_dataframes(
 
         if is_float:
             diff_mask = ~np.isclose(
-                common[col_before], common[col_after], rtol=tolerance, equal_nan=True
+                common[col_before],
+                common[col_after],
+                rtol=tolerance,
+                atol=tolerance,
+                equal_nan=True,
             )
         else:
             diff_mask = common[col_before].ne(common[col_after]) & ~(

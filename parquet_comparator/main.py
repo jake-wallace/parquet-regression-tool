@@ -8,6 +8,7 @@ from .inference import infer_sort_keys, infer_datetime_columns
 from .comparison import compare_dataframes
 from .reporting import ReportGenerator
 from .checksum import generate_checksum
+from .fuzzy_comparison import fuzzy_compare_dataframes
 
 
 @dataclass
@@ -50,12 +51,14 @@ class ParquetComparator:
             )
 
             if not hash_before or not hash_after:
-                click.echo("  -> Checksum failed: Could not determine a sort key.")
+                click.echo(
+                    "  -> Checksum stage failed: Could not determine a sort key."
+                )
                 return "CHECKSUM_FAILED", None
 
             if keys_before != keys_after:
                 click.echo(
-                    f"  -> Checksum failed: Inferred sort keys do not match ('{keys_before}' vs '{keys_after}')."
+                    f"  -> Checksum stage failed: Inferred sort keys do not match ('{keys_before}' vs '{keys_after}')."
                 )
                 return "CHECKSUM_FAILED", None
 
@@ -69,10 +72,8 @@ class ParquetComparator:
             return "CHECKSUM_FAILED", None
 
     def run(self, skip_checksum: bool = False) -> ComparisonResult:
-        # Always check schema first
         schema_diff = self._check_schemas()
         if schema_diff:
-            # If schema differs, generate a report and exit. This is a critical failure.
             report_generator = ReportGenerator(
                 self.file_before,
                 self.file_after,
@@ -87,10 +88,7 @@ class ParquetComparator:
                 status="SCHEMA_MISMATCH", details=schema_diff, report_path=report_path
             )
 
-        # Initialize variables
-        checksum_status = None
-        inferred_keys = []
-
+        checksum_status, inferred_keys = None, []
         if not skip_checksum:
             checksum_status, inferred_keys = self._run_checksum_comparison()
             if checksum_status == "CHECKSUM_MATCH":
@@ -98,7 +96,6 @@ class ParquetComparator:
             if checksum_status == "CHECKSUM_MISMATCH":
                 click.echo("  -> Checksums differ. Proceeding to detailed comparison.")
 
-        click.echo("  -> Stage 2: Performing detailed row-by-row comparison...")
         try:
             df_before = pd.read_parquet(self.file_before)
             df_after = pd.read_parquet(self.file_after)
@@ -119,17 +116,41 @@ class ParquetComparator:
                 errors="ignore",
             )
 
-        # Use keys from checksum if available, otherwise infer again
         sort_keys = inferred_keys or infer_sort_keys(
             df_before, self.config["key_uniqueness_threshold"]
         )
+
         if not sort_keys:
-            return ComparisonResult(
-                status="NO_SORT_KEY",
-                details="Could not infer a unique key for detailed comparison.",
+            click.secho(
+                "  -> No unique key found. Falling back to fuzzy record linkage.",
+                fg="yellow",
             )
 
-        if not inferred_keys:  # Only print if we are inferring for the first time
+            fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
+            comparison_results = fuzzy_compare_dataframes(
+                df_before, df_after, fuzzy_threshold
+            )
+
+            report_generator = ReportGenerator(
+                self.file_before,
+                self.file_after,
+                self.output_dir,
+                results=comparison_results,
+                inferred_keys=["(Fuzzy Match)"],
+                schema_diff=schema_diff,
+            )
+            report_path = report_generator.generate_html_report()
+            report_generator.print_summary()
+
+            status = (
+                "FUZZY_DIFFERENCES_FOUND"
+                if not comparison_results.is_identical
+                else "FUZZY_IDENTICAL"
+            )
+            return ComparisonResult(status=status, report_path=report_path)
+
+        click.echo("  -> Stage 2: Performing detailed row-by-row comparison...")
+        if not inferred_keys:
             click.echo(f"  -> Using inferred sort key(s) for diff: {sort_keys}")
 
         datetime_cols = infer_datetime_columns(
@@ -149,16 +170,14 @@ class ParquetComparator:
             self.file_before,
             self.file_after,
             self.output_dir,
-            comparison_results,
-            sort_keys,
-            schema_diff,
+            results=comparison_results,
+            inferred_keys=sort_keys,
+            schema_diff=schema_diff,
         )
         report_generator.print_summary()
         report_path = report_generator.generate_html_report()
 
-        # Determine the final status
         if comparison_results.is_identical:
-            # If checksum failed but detailed diff passed, it's a tolerance match
             status = (
                 "IDENTICAL (TOLERANCE_MATCH)"
                 if checksum_status == "CHECKSUM_MISMATCH"

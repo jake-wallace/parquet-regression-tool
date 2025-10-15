@@ -15,22 +15,18 @@ def generate_checksum(
     """
     df = pd.read_parquet(file_path)
 
-    # Apply global ignore rules before hashing
     if rules["ignore_columns"]:
         cols_to_drop = [c for c in rules["ignore_columns"] if c in df.columns]
         df = df.drop(columns=cols_to_drop)
 
-    # Always infer sort keys
     sort_keys = infer_sort_keys(df, config.get("key_uniqueness_threshold", 0.99))
 
     if not sort_keys:
-        return None, None  # Cannot create a reliable checksum without a key
+        return None, None
 
-    # Create the canonical representation
     df.sort_values(by=sort_keys, inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # Generate hash from the sorted dataframe
     hasher = hashlib.sha256()
     hash_series = pd.util.hash_pandas_object(df, index=False)
     hasher.update(hash_series.values)

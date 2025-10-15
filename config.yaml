@@ -26,3 +26,11 @@ key_uniqueness_threshold: 0.99
 # A string column is inferred as a datetime column if this percentage of a
 # sample can be successfully parsed as a date.
 datetime_parse_threshold: 0.9
+
+# === Fuzzy Matching Settings (for files without unique keys) ===
+
+# The minimum similarity score (from 0.0 to 1.0) required to consider
+# two rows a match when no unique key can be found.
+# - Higher values (e.g., 0.95) are stricter.
+# - Lower values (e.g., 0.75) are more lenient.
+fuzzy_match_threshold: 0.85

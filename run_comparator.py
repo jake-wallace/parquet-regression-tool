@@ -13,12 +13,22 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def get_global_rules(config: dict) -> dict:
-    """Loads global, non-schema-specific rules from the config."""
-    return {
+def get_rules_for_file(file_path: Path, config: dict) -> dict:
+    """
+    Loads global rules and overrides them with any matching file-specific rules.
+    """
+    rules = {
         "float_tolerance": config.get("float_tolerance", 1.0e-6),
         "ignore_columns": config.get("global_ignore_columns", []),
     }
+    for specific_rule in config.get("file_specific_rules", []):
+        if file_path.match(specific_rule["pattern"]):
+            click.echo(
+                f"  -> Matched specific rule for pattern: {specific_rule['pattern']}"
+            )
+            rules.update(specific_rule)
+            return rules
+    return rules
 
 
 @click.command()
@@ -39,8 +49,8 @@ def get_global_rules(config: dict) -> dict:
 def main(config_file, force, no_checksum):
     """
     A generic tool to compare Parquet files for regression testing.
-    It automatically infers keys and schemas, performs a fast checksum check,
-    and falls back to a detailed diff, generating console and HTML reports.
+    It automatically infers keys, handles global and specific rules,
+    and generates console and HTML reports.
     """
     try:
         config = load_config(config_file)
@@ -66,9 +76,6 @@ def main(config_file, force, no_checksum):
         click.secho("No matching file pairs found.", fg="yellow")
         return
 
-    # Load the global rules once
-    global_rules = get_global_rules(config)
-
     for file_before, file_after in file_pairs:
         relative_path = file_before.relative_to(base_before)
         click.secho(f"\nProcessing: {relative_path}", bold=True, fg="cyan")
@@ -79,8 +86,10 @@ def main(config_file, force, no_checksum):
             )
             continue
 
+        rules = get_rules_for_file(file_before, config)
+
         comparator = ParquetComparator(
-            file_before, file_after, output_dir, config, global_rules
+            file_before, file_after, output_dir, config, rules
         )
         result = comparator.run(skip_checksum=no_checksum)
 
@@ -88,14 +97,19 @@ def main(config_file, force, no_checksum):
             file_before, file_after, result.status, result.report_path
         )
 
-        if "IDENTICAL" in result.status:
+        if "IDENTICAL" in result.status or "FUZZY_IDENTICAL" in result.status:
             click.secho(f"  -> Status: {result.status}", fg="green")
-        elif result.status == "DIFFERENCES_FOUND":
+            if result.report_path:
+                click.echo(f"  -> Report generated (for audit): {result.report_path}")
+        elif "DIFFERENCES_FOUND" in result.status:
             click.secho(f"  -> Status: {result.status}", fg="yellow")
             click.echo(f"  -> Report generated at: {result.report_path}")
-        else:
+        else:  # Error states
             click.secho(f"  -> Status: {result.status}", fg="red")
-            click.echo(f"  -> Details: {result.details}")
+            if result.report_path:
+                click.echo(f"  -> Report generated at: {result.report_path}")
+            else:
+                click.echo(f"  -> Details: {result.details}")
 
     end_time = datetime.datetime.now()
     click.secho(

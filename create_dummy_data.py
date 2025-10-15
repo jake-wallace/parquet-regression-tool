@@ -166,6 +166,28 @@ def generate_data():
     df_after.to_parquet(path_after / "11_strict_tolerance_fail.parquet")
     print("Generated: 11_strict_tolerance_fail.parquet")
 
+    # --- Test Case 12: Fuzzy Matching with "Evil Twin" Rows ---
+    # This tests if the weighted logic can distinguish between two very
+    # similar rows and correctly identify which one was modified.
+    df_before = pd.DataFrame({
+        'customer_id': ['CUST-ABC', 'CUST-ABC', 'CUST-XYZ'],
+        'product_name': ['3-Port USB Hub', '3-Port USB Hubb', 'Wireless Mouse'], # Note the typo in the second row
+        'status': ['SHIPPED', 'SHIPPED', 'DELIVERED']
+    })
+    
+    # The 'after' file changes the status of the row that HAD the typo.
+    # The weighted logic should use the high-cardinality 'product_name'
+    # as an anchor to correctly pair the rows and find the modification.
+    df_after = pd.DataFrame({
+        'customer_id': ['CUST-XYZ', 'CUST-ABC', 'CUST-ABC'], # Reordered
+        'product_name': ['Wireless Mouse', '3-Port USB Hub', '3-Port USB Hubb'],
+        'status': ['DELIVERED', 'SHIPPED', 'RETURNED'] # This status changed
+    })
+    
+    df_before.to_parquet(path_before / "12_fuzzy_evil_twin.parquet")
+    df_after.to_parquet(path_after / "12_fuzzy_evil_twin.parquet")
+    print("Generated: 12_fuzzy_evil_twin.parquet")
+
     print("\nDummy data generation complete.")
 
 

@@ -42,7 +42,6 @@ class ComparisonTracker:
         self.conn.commit()
 
     def has_been_processed(self, file_before: Path, file_after: Path) -> bool:
-        """Checks if a file pair has been successfully logged as IDENTICAL."""
         self.cursor.execute(
             "SELECT status FROM comparison_log WHERE file_before = ? AND file_after = ?",
             (str(file_before), str(file_after)),

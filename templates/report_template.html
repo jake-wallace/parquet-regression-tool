@@ -35,11 +35,11 @@
             <p><strong>Comparison Timestamp:</strong> {{ timestamp }}</p>
             <p><strong>Overall Status:</strong>
                 {% if 'IDENTICAL' in summary.status %}<span class="status-identical">{{ summary.status }}</span>
-                {% elif summary.status == 'DIFFERENCES_FOUND' %}<span class="status-differences">{{ summary.status }}</span>
+                {% elif 'DIFFERENCES_FOUND' in summary.status %}<span class="status-differences">{{ summary.status }}</span>
                 {% else %}<span class="status-error">{{ summary.status }}</span>
                 {% endif %}
             </p>
-            <p><strong>Sort Keys Used:</strong> <code>{{ summary.inferred_keys | join(', ') or 'N/A' }}</code></p>
+            <p><strong>Comparison Method:</strong> <code>{{ summary.inferred_keys | join(', ') }}</code></p>
         </div>
 
         <div class="section">
