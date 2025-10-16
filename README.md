@@ -62,7 +62,7 @@ If no unique key can be found, the tool does not give up. It falls back to a pow
 ### 1. Clone the Repository & Navigate
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/jake-wallace/parquet-regression-tool
 cd parquet-regression-tool
 ```
 
