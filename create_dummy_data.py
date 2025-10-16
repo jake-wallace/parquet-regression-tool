@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from pathlib import Path
 import shutil
 
@@ -176,7 +175,7 @@ def generate_data():
                 "3-Port USB Hub",
                 "3-Port USB Hubb",
                 "Wireless Mouse",
-            ],  # Note the typo in the second row
+            ],
             "status": ["SHIPPED", "SHIPPED", "DELIVERED"],
         }
     )
@@ -195,6 +194,42 @@ def generate_data():
     df_before.to_parquet(path_before / "12_fuzzy_evil_twin.parquet")
     df_after.to_parquet(path_after / "12_fuzzy_evil_twin.parquet")
     print("Generated: 12_fuzzy_evil_twin.parquet")
+
+    # --- Test Case 13: Complex Changes in One File
+    # This tests a combination of a deleted row, an added row, and a modified value.
+
+    df_before = pd.DataFrame(
+        {
+            "record_id": [10, 20, 30, 40],
+            "category": ["A", "A", "B", "C"],
+            "value": [100, 200, 300, 400],
+            "status": ["active", "active", "pending", "active"],
+        }
+    )
+
+    # The 'after' file will have multiple data-level changes:
+    # - Row 10 is unchanged.
+    # - Row 20's 'value' is modified.
+    # - Row 30's 'status' is modified.
+    # - Row 40 is deleted.
+    # - Row 50 is added.
+    df_after_data = {
+        "record_id": [50, 10, 30, 20],  # Reordered
+        "category": ["B", "A", "B", "A"],
+        "value": [500, 100, 300, 250],  # Value for record_id 20 changed from 200 to 250
+        "status": [
+            "new",
+            "active",
+            "completed",
+            "active",
+        ],  # Status for record_id 30 changed from 'pending' to 'completed'
+    }
+    df_after = pd.DataFrame(df_after_data)
+
+    # Save the files
+    df_before.to_parquet(path_before / "13_complex_changes.parquet")
+    df_after.to_parquet(path_after / "13_complex_changes.parquet")
+    print("Generated: 13_complex_changes.parquet")
 
     print("\nDummy data generation complete.")
 

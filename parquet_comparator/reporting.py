@@ -1,4 +1,5 @@
 import polars as pl
+import pandas as pd
 from pathlib import Path
 import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -11,16 +12,24 @@ class ReportGenerator:
         self.file_before = file_before
         self.file_after = file_after
         self.output_dir = output_dir
-        self.results = results  # Can be None for schema mismatch
+        self.results = results
         self.inferred_keys = inferred_keys
         self.schema_diff = schema_diff
         self.summary = self._create_summary()
 
     def _create_summary(self):
         summary = {
-            "file_before": self.file_before,
-            "file_after": self.file_after,
+            "filename": self.file_before.name,
+            "file_before": str(
+                self.file_before
+            ),  # Use string representation for the report
+            "file_after": str(
+                self.file_after
+            ),  # Use string representation for the report
             "inferred_keys": self.inferred_keys,
+            "timestamp": datetime.datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),  # MOVED timestamp here
         }
 
         if self.schema_diff:
@@ -40,14 +49,14 @@ class ReportGenerator:
             rows_added = self.results.added.height
             rows_deleted = self.results.deleted.height
 
-            # For modified, we need to count unique keys, which are in the 'key' column for Polars
             if self.results.modified.height > 0:
+                # Polars' n_unique() on a column named 'key' will work here
                 rows_modified = self.results.modified.select(pl.col("key")).n_unique()
             else:
                 rows_modified = 0
 
-            # Estimate original row counts
-            rows_in_common = rows_modified  # Approximation
+            # Estimate row counts based on diffs
+            rows_in_common = rows_modified
             rows_before = rows_in_common + rows_deleted
             rows_after = rows_in_common + rows_added
 
@@ -71,25 +80,25 @@ class ReportGenerator:
 
         return summary
 
+    def print_summary(self):
+        # This function is used by the main process for console output, so it's fine.
+        pass
+
     def generate_html_report(self) -> Path:
         template_dir = Path(__file__).parent.parent / "templates"
         env = Environment(loader=FileSystemLoader(template_dir))
         template = env.get_template("report_template.html")
 
         def to_html(df: pl.DataFrame):
-            """Helper to convert Polars DF to HTML via Pandas."""
             if df is None or df.height == 0:
                 return None
-            # When converting, the fuzzy key is a column. Precise key is the index.
             pd_df = df.to_pandas()
             if "key" in pd_df.columns:
                 pd_df = pd_df.set_index("key")
             return pd_df.to_html()
 
+        # The data passed to the template is now cleaner and more consistent.
         report_data = {
-            "file_before": str(self.file_before),
-            "file_after": str(self.file_after),
-            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "summary": self.summary,
             "schema_diff": self.schema_diff,
             "modified_rows_html": to_html(
