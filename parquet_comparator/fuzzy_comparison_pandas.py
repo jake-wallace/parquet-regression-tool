@@ -3,14 +3,21 @@ import jellyfish
 import click
 import numpy as np
 
-from .comparison import ComparisonData
+# ComparisonData class here to avoid circular imports
+# and keep this module self-contained as a helper.
+from dataclasses import dataclass, field
+
+
+@dataclass
+class PandasComparisonData:
+    added: pd.DataFrame = field(default_factory=pd.DataFrame)
+    deleted: pd.DataFrame = field(default_factory=pd.DataFrame)
+    modified: pd.DataFrame = field(default_factory=pd.DataFrame)
+    is_identical: bool = True
 
 
 def _calculate_row_similarity(row1: pd.Series, row2: pd.Series, weights: dict) -> float:
-    """
-    Calculates a weighted similarity score between two rows (pandas Series).
-    Columns with higher cardinality (more unique values) are given more weight.
-    """
+    """Calculates a weighted similarity score between two rows (pandas Series)."""
     weighted_scores = []
     total_weight = 0.0
 
@@ -34,14 +41,11 @@ def _calculate_row_similarity(row1: pd.Series, row2: pd.Series, weights: dict) -
 
 
 def _get_column_weights(df: pd.DataFrame) -> dict:
-    """
-    Generates weights for each column based on its cardinality.
-    """
+    """Generates weights for each column based on its cardinality."""
     weights = {}
     num_rows = len(df)
     if num_rows == 0:
         return weights
-
     for col in df.columns:
         cardinality_ratio = df[col].nunique() / num_rows
         weights[col] = 1.0 + cardinality_ratio
@@ -49,9 +53,7 @@ def _get_column_weights(df: pd.DataFrame) -> dict:
 
 
 def _find_best_blocking_column(df: pd.DataFrame) -> str | None:
-    """
-    Finds a good column to "block" on to reduce the search space.
-    """
+    """Finds a good column to "block" on to reduce the search space."""
     potential_cols = df.select_dtypes(exclude=["number", "datetime"]).columns
     if potential_cols.empty:
         return None
@@ -76,10 +78,8 @@ def _find_best_blocking_column(df: pd.DataFrame) -> str | None:
 
 def fuzzy_compare_dataframes(
     df_before: pd.DataFrame, df_after: pd.DataFrame, similarity_threshold: float
-) -> ComparisonData:
-    """
-    Performs a fuzzy, weighted, row-by-row comparison for DataFrames without a unique key.
-    """
+) -> PandasComparisonData:
+    """Performs a fuzzy, weighted, row-by-row comparison using pandas."""
     modified_rows = []
     matched_after_indices = set()
 
@@ -160,7 +160,7 @@ def fuzzy_compare_dataframes(
 
     is_identical = added_df.empty and deleted_df.empty and modified_df.empty
 
-    return ComparisonData(
+    return PandasComparisonData(
         added=added_df,
         deleted=deleted_df,
         modified=modified_df,

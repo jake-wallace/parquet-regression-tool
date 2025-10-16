@@ -1,4 +1,4 @@
-pandas
+polars
 pyarrow
 click
 PyYAML

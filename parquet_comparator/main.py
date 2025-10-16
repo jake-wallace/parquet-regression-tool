@@ -1,14 +1,13 @@
-import pandas as pd
+import polars as pl
 import pyarrow.parquet as pq
-import click
 from pathlib import Path
 from dataclasses import dataclass
 
-from .inference import infer_sort_keys, infer_datetime_columns
-from .comparison import compare_dataframes
+from .inference import infer_sort_keys_pl
+from .comparison import compare_dataframes_pl, ComparisonData
 from .reporting import ReportGenerator
-from .checksum import generate_checksum
-from .fuzzy_comparison import fuzzy_compare_dataframes
+from .checksum import generate_checksum_pl
+from .fuzzy_comparison_pandas import fuzzy_compare_dataframes as fuzzy_compare_pandas
 
 
 @dataclass
@@ -40,37 +39,6 @@ class ParquetComparator:
             return f"Schema mismatch.\n\nBefore:\n{schema_before}\n\nAfter:\n{schema_after}"
         return None
 
-    def _run_checksum_comparison(self):
-        click.echo("  -> Stage 1: Attempting fast checksum comparison...")
-        try:
-            hash_before, keys_before = generate_checksum(
-                self.file_before, self.config, self.rules
-            )
-            hash_after, keys_after = generate_checksum(
-                self.file_after, self.config, self.rules
-            )
-
-            if not hash_before or not hash_after:
-                click.echo(
-                    "  -> Checksum stage failed: Could not determine a sort key."
-                )
-                return "CHECKSUM_FAILED", None
-
-            if keys_before != keys_after:
-                click.echo(
-                    f"  -> Checksum stage failed: Inferred sort keys do not match ('{keys_before}' vs '{keys_after}')."
-                )
-                return "CHECKSUM_FAILED", None
-
-            click.echo(f"  -> Using inferred sort key(s) for checksum: {keys_before}")
-            if hash_before == hash_after:
-                return "CHECKSUM_MATCH", keys_before
-            else:
-                return "CHECKSUM_MISMATCH", keys_before
-        except Exception as e:
-            click.secho(f"  -> Checksum error: {e}", fg="red")
-            return "CHECKSUM_FAILED", None
-
     def run(self, skip_checksum: bool = False) -> ComparisonResult:
         schema_diff = self._check_schemas()
         if schema_diff:
@@ -83,108 +51,89 @@ class ParquetComparator:
                 schema_diff=schema_diff,
             )
             report_path = report_generator.generate_html_report()
-            report_generator.print_summary()
             return ComparisonResult(
                 status="SCHEMA_MISMATCH", details=schema_diff, report_path=report_path
             )
 
         checksum_status, inferred_keys = None, []
         if not skip_checksum:
-            checksum_status, inferred_keys = self._run_checksum_comparison()
+            checksum_status, inferred_keys = generate_checksum_pl(
+                self.file_before, self.config, self.rules
+            )
             if checksum_status == "CHECKSUM_MATCH":
                 return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
             if checksum_status == "CHECKSUM_MISMATCH":
-                click.echo("  -> Checksums differ. Proceeding to detailed comparison.")
+                pass  # Continue to detailed diff
 
         try:
-            df_before = pd.read_parquet(self.file_before)
-            df_after = pd.read_parquet(self.file_after)
+            df_before = pl.read_parquet(self.file_before)
+            df_after = pl.read_parquet(self.file_after)
         except Exception as e:
             return ComparisonResult(status="READ_ERROR", details=str(e))
 
         if self.rules["ignore_columns"]:
-            df_before = df_before.drop(
-                columns=[
-                    c for c in self.rules["ignore_columns"] if c in df_before.columns
-                ],
-                errors="ignore",
-            )
-            df_after = df_after.drop(
-                columns=[
-                    c for c in self.rules["ignore_columns"] if c in df_after.columns
-                ],
-                errors="ignore",
-            )
+            # Polars requires checking if columns exist before dropping
+            cols_to_drop_before = [
+                c for c in self.rules["ignore_columns"] if c in df_before.columns
+            ]
+            cols_to_drop_after = [
+                c for c in self.rules["ignore_columns"] if c in df_after.columns
+            ]
+            df_before = df_before.drop(cols_to_drop_before)
+            df_after = df_after.drop(cols_to_drop_after)
 
-        sort_keys = inferred_keys or infer_sort_keys(
+        sort_keys = inferred_keys or infer_sort_keys_pl(
             df_before, self.config["key_uniqueness_threshold"]
         )
 
+        inferred_keys_for_report = []
+        status = ""
+
         if not sort_keys:
-            click.secho(
-                "  -> No unique key found. Falling back to fuzzy record linkage.",
-                fg="yellow",
-            )
-
             fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
-            comparison_results = fuzzy_compare_dataframes(
-                df_before, df_after, fuzzy_threshold
-            )
 
-            report_generator = ReportGenerator(
-                self.file_before,
-                self.file_after,
-                self.output_dir,
-                results=comparison_results,
-                inferred_keys=["(Fuzzy Match)"],
-                schema_diff=schema_diff,
+            # Bridge to pandas for the fuzzy comparison
+            pd_before = df_before.to_pandas()
+            pd_after = df_after.to_pandas()
+            pd_results = fuzzy_compare_pandas(pd_before, pd_after, fuzzy_threshold)
+
+            # Convert results back to Polars for consistent reporting
+            comparison_results = ComparisonData(
+                added=pl.from_pandas(pd_results.added),
+                deleted=pl.from_pandas(pd_results.deleted),
+                modified=pl.from_pandas(pd_results.modified.reset_index()),
+                is_identical=pd_results.is_identical,
             )
-            report_path = report_generator.generate_html_report()
-            report_generator.print_summary()
 
             status = (
                 "FUZZY_IDENTICAL"
                 if comparison_results.is_identical
                 else "FUZZY_DIFFERENCES_FOUND"
             )
-            return ComparisonResult(status=status, report_path=report_path)
+            inferred_keys_for_report = ["(Fuzzy Match)"]
+        else:
+            comparison_results = compare_dataframes_pl(
+                df_before, df_after, sort_keys, self.rules["float_tolerance"]
+            )
 
-        click.echo("  -> Stage 2: Performing detailed row-by-row comparison...")
-        if not inferred_keys:
-            click.echo(f"  -> Using inferred sort key(s) for diff: {sort_keys}")
-
-        datetime_cols = infer_datetime_columns(
-            df_before, 1000, self.config["datetime_parse_threshold"]
-        )
-        for col in datetime_cols:
-            if col in df_before.columns:
-                df_before[col] = pd.to_datetime(df_before[col], errors="coerce")
-            if col in df_after.columns:
-                df_after[col] = pd.to_datetime(df_after[col], errors="coerce")
-
-        comparison_results = compare_dataframes(
-            df_before, df_after, sort_keys, self.rules["float_tolerance"]
-        )
+            if comparison_results.is_identical:
+                status = (
+                    "IDENTICAL (TOLERANCE_MATCH)"
+                    if checksum_status == "CHECKSUM_MISMATCH"
+                    else "IDENTICAL"
+                )
+            else:
+                status = "DIFFERENCES_FOUND"
+            inferred_keys_for_report = sort_keys
 
         report_generator = ReportGenerator(
             self.file_before,
             self.file_after,
             self.output_dir,
             results=comparison_results,
-            inferred_keys=sort_keys,
+            inferred_keys=inferred_keys_for_report,
             schema_diff=schema_diff,
         )
-        report_generator.print_summary()
         report_path = report_generator.generate_html_report()
-
-        status = ""
-        if comparison_results.is_identical:
-            if checksum_status == "CHECKSUM_MISMATCH":
-                status = "IDENTICAL (TOLERANCE_MATCH)"
-            else:
-                # This case handles --no-checksum runs that are identical
-                status = "IDENTICAL"
-        else:
-            status = "DIFFERENCES_FOUND"
 
         return ComparisonResult(status=status, report_path=report_path)

@@ -1,48 +1,43 @@
-import pandas as pd
+import polars as pl
 
 
-def infer_sort_keys(df: pd.DataFrame, min_uniqueness_ratio: float = 0.99) -> list[str]:
-    """Infers candidate sort keys from a DataFrame based on uniqueness."""
+def infer_sort_keys_pl(
+    df: pl.DataFrame, min_uniqueness_ratio: float = 0.99
+) -> list[str]:
     candidate_keys = []
-    num_rows = len(df)
-    if num_rows == 0:
+    if df.height == 0:
         return []
 
     for col in df.columns:
-        if df[col].is_unique:
+        if df[col].n_unique() == df.height:
             candidate_keys.append(col)
-            if not pd.api.types.is_numeric_dtype(df[col].dtype):
+            if df[col].dtype not in pl.NUMERIC_DTYPES:
                 return [col]
 
     if candidate_keys:
         return candidate_keys[:1]
 
     for col in df.columns:
-        uniqueness_ratio = df[col].nunique() / num_rows
-        if uniqueness_ratio >= min_uniqueness_ratio:
+        if (df[col].n_unique() / df.height) >= min_uniqueness_ratio:
             candidate_keys.append(col)
 
     return candidate_keys[:1]
 
 
-def infer_datetime_columns(
-    df: pd.DataFrame, sample_size: int = 1000, success_threshold: float = 0.9
+def infer_datetime_columns_pl(
+    df: pl.DataFrame, sample_size: int = 1000, success_threshold: float = 0.9
 ) -> list[str]:
-    """Infers which 'object' type columns are likely datetimes."""
-    datetime_cols = list(df.select_dtypes(include=["datetime64"]).columns)
+    datetime_cols = df.select(pl.col(pl.Datetime)).columns
 
-    object_cols = df.select_dtypes(include=["object"]).columns
-    for col in object_cols:
-        sample = df[col].dropna().head(sample_size)
-        if sample.empty:
+    string_cols = df.select(pl.col(pl.Utf8)).columns
+    for col in string_cols:
+        sample = df[col].drop_nulls().head(sample_size)
+        if sample.height == 0:
             continue
 
-        try:
-            parsed_sample = pd.to_datetime(sample, errors="coerce")
-            success_rate = parsed_sample.notna().sum() / len(sample)
-            if success_rate >= success_threshold:
-                datetime_cols.append(col)
-        except (ValueError, TypeError):
-            continue
+        parsed_sample = sample.str.to_datetime(strict=False, errors="null")
+        success_rate = parsed_sample.is_not_null().sum() / sample.height
+        if success_rate >= success_threshold:
+            datetime_cols.append(col)
 
     return list(set(datetime_cols))
