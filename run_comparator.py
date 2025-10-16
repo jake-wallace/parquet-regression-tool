@@ -31,6 +31,17 @@ def get_rules_for_file(file_path: Path, config: dict) -> dict:
     return rules
 
 
+def find_unmatched_files(base_before: Path, base_after: Path) -> tuple[set, set]:
+    """Finds files that exist in one directory but not the other."""
+    files_before = {f.relative_to(base_before) for f in base_before.rglob("*.parquet")}
+    files_after = {f.relative_to(base_after) for f in base_after.rglob("*.parquet")}
+
+    only_in_before = files_before - files_after
+    only_in_after = files_after - files_before
+
+    return only_in_before, only_in_after
+
+
 @click.command()
 @click.option(
     "--config-file", "-c", default="config.yaml", help="Path to the configuration file."
@@ -49,8 +60,6 @@ def get_rules_for_file(file_path: Path, config: dict) -> dict:
 def main(config_file, force, no_checksum):
     """
     A generic tool to compare Parquet files for regression testing.
-    It automatically infers keys, handles global and specific rules,
-    and generates console and HTML reports.
     """
     try:
         config = load_config(config_file)
@@ -73,8 +82,7 @@ def main(config_file, force, no_checksum):
 
     file_pairs = list(pair_files(base_before, base_after))
     if not file_pairs:
-        click.secho("No matching file pairs found.", fg="yellow")
-        return
+        click.secho("No matching file pairs found to compare.", fg="yellow")
 
     for file_before, file_after in file_pairs:
         relative_path = file_before.relative_to(base_before)
@@ -97,6 +105,7 @@ def main(config_file, force, no_checksum):
             file_before, file_after, result.status, result.report_path
         )
 
+        # ... (rest of the loop is the same)
         if "IDENTICAL" in result.status or "FUZZY_IDENTICAL" in result.status:
             click.secho(f"  -> Status: {result.status}", fg="green")
             if result.report_path:
@@ -110,6 +119,21 @@ def main(config_file, force, no_checksum):
                 click.echo(f"  -> Report generated at: {result.report_path}")
             else:
                 click.echo(f"  -> Details: {result.details}")
+
+    click.secho("\n--- Unmatched Files Summary ---", bold=True)
+    only_in_before, only_in_after = find_unmatched_files(base_before, base_after)
+
+    if not only_in_before and not only_in_after:
+        click.secho("All files were successfully paired.", fg="green")
+    else:
+        if only_in_before:
+            click.secho("\nFiles found in 'before' but NOT in 'after':", fg="yellow")
+            for f in sorted(only_in_before):
+                click.echo(f"  - {f}")
+        if only_in_after:
+            click.secho("\nFiles found in 'after' but NOT in 'before':", fg="yellow")
+            for f in sorted(only_in_after):
+                click.echo(f"  - {f}")
 
     end_time = datetime.datetime.now()
     click.secho(

@@ -143,9 +143,9 @@ class ParquetComparator:
             report_generator.print_summary()
 
             status = (
-                "FUZZY_DIFFERENCES_FOUND"
-                if not comparison_results.is_identical
-                else "FUZZY_IDENTICAL"
+                "FUZZY_IDENTICAL"
+                if comparison_results.is_identical
+                else "FUZZY_DIFFERENCES_FOUND"
             )
             return ComparisonResult(status=status, report_path=report_path)
 
@@ -177,12 +177,13 @@ class ParquetComparator:
         report_generator.print_summary()
         report_path = report_generator.generate_html_report()
 
+        status = ""
         if comparison_results.is_identical:
-            status = (
-                "IDENTICAL (TOLERANCE_MATCH)"
-                if checksum_status == "CHECKSUM_MISMATCH"
-                else "IDENTICAL"
-            )
+            if checksum_status == "CHECKSUM_MISMATCH":
+                status = "IDENTICAL (TOLERANCE_MATCH)"
+            else:
+                # This case handles --no-checksum runs that are identical
+                status = "IDENTICAL"
         else:
             status = "DIFFERENCES_FOUND"
 
