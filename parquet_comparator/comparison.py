@@ -1,5 +1,6 @@
 import polars as pl
 from dataclasses import dataclass, field
+from .schemas import SchemaDiff
 
 
 @dataclass
@@ -13,50 +14,61 @@ class ComparisonData:
 
 
 def compare_dataframes_pl(
-    df_before: pl.DataFrame, df_after: pl.DataFrame, sort_keys: list, tolerance: float
+    df_before: pl.DataFrame,
+    df_after: pl.DataFrame,
+    sort_keys: list,
+    tolerance: float,
+    schema_diff: SchemaDiff,
 ) -> ComparisonData:
     """
-    Compares two Polars DataFrames using a unique key, categorizing differences
-    into added, deleted, and modified.
+    Compares two Polars DataFrames, handling schema differences gracefully by
+    casting mismatched types to strings for comparison.
     """
 
-    # Outer join to find all differences
-    merged = df_before.join(df_after, on=sort_keys, how="outer", suffix="_after")
+    df_before_original_cols = df_before.columns
+    df_after_original_cols = df_after.columns
 
-    # For added rows, select ONLY the key columns and the '_after' columns, then rename them.
-    after_cols = sort_keys + [col for col in df_after.columns if col not in sort_keys]
+    common_cols = set(df_before_original_cols).intersection(set(df_after_original_cols))
+
+    for col_name in schema_diff.type_changes:
+        if col_name in common_cols:
+            df_before = df_before.with_columns(pl.col(col_name).cast(pl.Utf8))
+            df_after = df_after.with_columns(pl.col(col_name).cast(pl.Utf8))
+
+    join_cols = [c for c in df_before.columns if c in df_after.columns]
+
+    merged = df_before.select(join_cols).join(
+        df_after.select(join_cols), on=sort_keys, how="outer", suffix="_after"
+    )
+
+    after_cols_in_join = sort_keys + [
+        f"{col}_after" for col in join_cols if col not in sort_keys
+    ]
+    rename_map_after = {
+        f"{col}_after": col for col in join_cols if col not in sort_keys
+    }
     added = (
-        merged.filter(pl.col(df_before.columns[0]).is_null())
-        .select(
-            pl.col(
-                sort_keys
-                + [f"{col}_after" for col in after_cols if col not in sort_keys]
-            )
-        )
-        .rename({f"{col}_after": col for col in after_cols if col not in sort_keys})
+        merged.filter(pl.col(join_cols[0]).is_null())
+        .select(after_cols_in_join)
+        .rename(rename_map_after)
     )
 
-    # For deleted rows, select ONLY the original columns from the 'before' dataframe.
-    deleted = merged.filter(pl.col(df_after.columns[0] + "_after").is_null()).select(
-        df_before.columns
-    )
+    deleted = merged.filter(pl.col(f"{join_cols[0]}_after").is_null()).select(join_cols)
 
     common = merged.drop_nulls()
     modified_rows = []
 
-    for col in df_before.columns:
+    for col in join_cols:
         if col in sort_keys:
             continue
 
-        col_before_name = col
-        col_after_name = col + "_after"
-
-        col_before = pl.col(col_before_name)
-        col_after = pl.col(col_after_name)
+        col_before_name, col_after_name = col, f"{col}_after"
+        col_before, col_after = pl.col(col_before_name), pl.col(col_after_name)
 
         diff_mask = None
         dtype = df_before[col].dtype
-        if dtype in pl.FLOAT_DTYPES:
+
+        if dtype in pl.FLOAT_DTYPES and col not in schema_diff.type_changes:
             diff_mask = (col_before - col_after).abs() > tolerance
         else:
             diff_mask = col_before != col_after
@@ -66,9 +78,6 @@ def compare_dataframes_pl(
         differences = common.filter(final_mask)
         if differences.height > 0:
             for row in differences.to_dicts():
-
-                # Proactively convert the key tuple to a string representation.
-                # This safely handles any data type inside the key, including lists.
                 key_tuple = tuple(row[k] for k in sort_keys)
                 key_str = str(key_tuple)
 
@@ -84,7 +93,6 @@ def compare_dataframes_pl(
     modified_df = None
     if modified_rows:
         modified_df = pl.from_dicts(modified_rows)
-
     else:
         modified_df = pl.DataFrame(
             schema={
@@ -95,7 +103,12 @@ def compare_dataframes_pl(
             }
         )
 
-    is_identical = added.height == 0 and deleted.height == 0 and modified_df.height == 0
+    is_identical = (
+        added.height == 0
+        and deleted.height == 0
+        and modified_df.height == 0
+        and schema_diff.is_identical
+    )
     return ComparisonData(
         added=added, deleted=deleted, modified=modified_df, is_identical=is_identical
     )

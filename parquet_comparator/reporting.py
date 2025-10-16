@@ -1,5 +1,4 @@
 import polars as pl
-import pandas as pd
 from pathlib import Path
 import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -20,58 +19,42 @@ class ReportGenerator:
     def _create_summary(self):
         summary = {
             "filename": self.file_before.name,
-            "file_before": str(
-                self.file_before
-            ),  # Use string representation for the report
-            "file_after": str(
-                self.file_after
-            ),  # Use string representation for the report
+            "file_before": str(self.file_before),
+            "file_after": str(self.file_after),
             "inferred_keys": self.inferred_keys,
-            "timestamp": datetime.datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),  # MOVED timestamp here
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "top_modified_fields": [],  # Default empty list
         }
 
-        if self.schema_diff:
-            summary["status"] = "SCHEMA_MISMATCH"
-            summary.update(
-                {
-                    "rows_before": "N/A",
-                    "rows_after": "N/A",
-                    "rows_added": "N/A",
-                    "rows_deleted": "N/A",
-                    "rows_modified": "N/A",
-                }
-            )
-            return summary
+        if not self.schema_diff.is_identical:
+            summary["status"] = "SCHEMA_DIFFERENCES_FOUND"
+        elif self.results and not self.results.is_identical:
+            summary["status"] = "DATA_DIFFERENCES_FOUND"
+        else:
+            summary["status"] = "IDENTICAL"
 
         if self.results:
             rows_added = self.results.added.height
             rows_deleted = self.results.deleted.height
+            rows_modified = (
+                self.results.modified.select(pl.col("key")).n_unique()
+                if self.results.modified.height > 0
+                else 0
+            )
 
             if self.results.modified.height > 0:
-                # Polars' n_unique() on a column named 'key' will work here
-                rows_modified = self.results.modified.select(pl.col("key")).n_unique()
-            else:
-                rows_modified = 0
-
-            # Estimate row counts based on diffs
-            rows_in_common = rows_modified
-            rows_before = rows_in_common + rows_deleted
-            rows_after = rows_in_common + rows_added
-
-            is_fuzzy = self.inferred_keys and self.inferred_keys[0] == "(Fuzzy Match)"
-            if self.results.is_identical:
-                summary["status"] = "FUZZY_IDENTICAL" if is_fuzzy else "IDENTICAL"
-            else:
-                summary["status"] = (
-                    "FUZZY_DIFFERENCES_FOUND" if is_fuzzy else "DIFFERENCES_FOUND"
-                )
+                top_fields = (
+                    self.results.modified.group_by("column")
+                    .agg(pl.count().alias("change_count"))
+                    .sort("change_count", descending=True)
+                    .head(5)
+                ).to_dicts()
+                summary["top_modified_fields"] = top_fields
 
             summary.update(
                 {
-                    "rows_before": rows_before,
-                    "rows_after": rows_after,
+                    "rows_before": "N/A",
+                    "rows_after": "N/A",
                     "rows_added": rows_added,
                     "rows_deleted": rows_deleted,
                     "rows_modified": rows_modified,
@@ -79,10 +62,6 @@ class ReportGenerator:
             )
 
         return summary
-
-    def print_summary(self):
-        # This function is used by the main process for console output, so it's fine.
-        pass
 
     def generate_html_report(self) -> Path:
         template_dir = Path(__file__).parent.parent / "templates"
@@ -97,7 +76,6 @@ class ReportGenerator:
                 pd_df = pd_df.set_index("key")
             return pd_df.to_html()
 
-        # The data passed to the template is now cleaner and more consistent.
         report_data = {
             "summary": self.summary,
             "schema_diff": self.schema_diff,
