@@ -1,4 +1,4 @@
-# High-Performance Parquet Comparison Tool
+# Parquet Comparison Tool
 
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen) ![Python Version](https://img.shields.io/badge/Python-3.9+-blue) ![Powered by](https://img.shields.io/badge/Powered%20by-Polars%20%26%20PyArrow-purple)
 
