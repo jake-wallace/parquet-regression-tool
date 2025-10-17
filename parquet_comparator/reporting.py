@@ -77,37 +77,58 @@ class ReportGenerator:
         env = Environment(loader=FileSystemLoader(template_dir))
         template = env.get_template("report_template.html")
 
-        def to_html(df: pl.DataFrame):
+        def to_html_polars(df: pl.DataFrame):
             """
-            Helper to safely convert ANY Polars DF to HTML via Pandas.
-            This contains the definitive fix for all ArrowTypeErrors.
+            Safely converts a Polars DataFrame to an HTML table string.
+            This is the definitive fix for all ArrowTypeErrors.
             """
             if df is None or df.height == 0:
                 return None
 
-            # --- THIS IS THE BULLETPROOF SYNTAX FIX ---
-            # The correct method for an expression is .map_elements().
-            # This robustly applies the `str` function to every element in every column,
-            # guaranteeing a safe conversion to pandas.
-            sanitization_expressions = [
-                pl.col(c).map_elements(str, return_dtype=pl.Utf8) for c in df.columns
-            ]
-            sanitized_df = df.with_columns(sanitization_expressions)
-            # --- END OF FIX ---
+            # Sanitize all columns to string to ensure they can be displayed
+            df = df.with_columns(pl.all().cast(pl.Utf8, strict=False))
 
-            pd_df = sanitized_df.to_pandas()
-            if "key" in pd_df.columns:
-                pd_df = pd_df.set_index("key")
-            return pd_df.to_html()
+            headers = df.columns
+
+            # Handle fuzzy match key which is in the 'key' column
+            if "key" in headers:
+                key_col = "key"
+                headers.remove(key_col)
+                headers.insert(0, key_col)  # Ensure it's the first column
+            else:  # For added/deleted, the index is implicit
+                key_col = None
+
+            html = "<table><thead><tr>"
+            if key_col:
+                html += f"<th>{key_col}</th>"
+            for header in headers:
+                if header != key_col:
+                    html += f"<th>{header}</th>"
+            html += "</tr></thead><tbody>"
+
+            for row in df.iter_rows():
+                html += "<tr>"
+                row_dict = dict(zip(df.columns, row))
+                if key_col:
+                    html += f"<td>{row_dict.get(key_col, '')}</td>"
+                for header in headers:
+                    if header != key_col:
+                        html += f"<td>{row_dict.get(header, '')}</td>"
+                html += "</tr>"
+
+            html += "</tbody></table>"
+            return html
 
         report_data = {
             "summary": self.summary,
             "schema_diff": self.schema_diff,
-            "modified_rows_html": to_html(
+            "modified_rows_html": to_html_polars(
                 self.results.modified if self.results else None
             ),
-            "added_rows_html": to_html(self.results.added if self.results else None),
-            "deleted_rows_html": to_html(
+            "added_rows_html": to_html_polars(
+                self.results.added if self.results else None
+            ),
+            "deleted_rows_html": to_html_polars(
                 self.results.deleted if self.results else None
             ),
         }

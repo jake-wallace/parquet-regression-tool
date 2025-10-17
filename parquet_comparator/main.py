@@ -8,7 +8,9 @@ from .inference import infer_sort_keys_pl
 from .comparison import compare_dataframes_pl, ComparisonData
 from .reporting import ReportGenerator
 from .checksum import generate_checksum_pl
-from .fuzzy_comparison_pandas import fuzzy_compare_dataframes as fuzzy_compare_pandas
+
+# Import the new pure-Polars fuzzy matcher
+from .fuzzy_comparison import fuzzy_compare_dataframes_pl
 from .schemas import SchemaDiff
 
 
@@ -88,7 +90,7 @@ class ParquetComparator:
                 [c for c in self.rules["ignore_columns"] if c in df_after_raw.columns]
             )
 
-        # Step 2: Determine the "common ground" and create safe DataFrames for all subsequent operations.
+        # Step 2: Determine the "common ground" for all data-level operations.
         common_cols = list(
             set(df_before_raw.columns).intersection(set(df_after_raw.columns))
         )
@@ -100,10 +102,9 @@ class ParquetComparator:
             df_before, self.config["key_uniqueness_threshold"]
         )
 
-        # Step 4: Run checksum ONLY if a key was found. Pass the SAFE common-column DataFrames.
+        # Step 4: Run checksum ONLY if a key was found.
         checksum_status = None
         if not skip_checksum and sort_keys:
-            # Pass the common-column dataframes to ensure checksum is safe.
             hash_before, _ = generate_checksum_pl(df_before, sort_keys)
             hash_after, _ = generate_checksum_pl(df_after, sort_keys)
 
@@ -130,15 +131,10 @@ class ParquetComparator:
                 fg="yellow",
             )
             fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
-            # Pass the SAFE common-column dataframes to the fuzzy matcher
-            pd_before, pd_after = df_before.to_pandas(), df_after.to_pandas()
-            pd_results = fuzzy_compare_pandas(pd_before, pd_after, fuzzy_threshold)
 
-            comparison_results = ComparisonData(
-                added=pl.from_pandas(pd_results.added),
-                deleted=pl.from_pandas(pd_results.deleted),
-                modified=pl.from_pandas(pd_results.modified.reset_index()),
-                is_identical=pd_results.is_identical,
+            # Use the new pure-Polars fuzzy comparison function
+            comparison_results = fuzzy_compare_dataframes_pl(
+                df_before, df_after, fuzzy_threshold
             )
 
             status = (
@@ -148,10 +144,11 @@ class ParquetComparator:
             )
             inferred_keys_for_report = ["(Fuzzy Match)"]
         else:
-            # Pass the SAFE common-column dataframes to the precise comparator
+            # Use the precise, keyed comparison, but pass the original raw DataFrames
+            # so it can correctly report added/deleted columns.
             comparison_results = compare_dataframes_pl(
-                df_before,
-                df_after,
+                df_before_raw,
+                df_after_raw,
                 sort_keys,
                 self.rules["float_tolerance"],
                 schema_diff,
