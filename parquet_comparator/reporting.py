@@ -50,14 +50,15 @@ class ReportGenerator:
                 summary["top_modified_fields"] = top_fields_df.to_dicts()
 
             if not self.results.is_identical:
-                if status == "IDENTICAL":  # Only update if not already a schema diff
+                if status == "IDENTICAL":
                     is_fuzzy = (
                         self.inferred_keys and self.inferred_keys[0] == "(Fuzzy Match)"
                     )
-                    if is_fuzzy:
-                        status = "FUZZY_DIFFERENCES_FOUND"
-                    else:
-                        status = "DATA_DIFFERENCES_FOUND"
+                    status = (
+                        "FUZZY_DIFFERENCES_FOUND"
+                        if is_fuzzy
+                        else "DATA_DIFFERENCES_FOUND"
+                    )
 
             summary.update(
                 {
@@ -78,9 +79,16 @@ class ReportGenerator:
         template = env.get_template("report_template.html")
 
         def to_html(df: pl.DataFrame):
+            """
+            Helper to safely convert a Polars DF to HTML via Pandas.
+            This is the final safeguard against type errors.
+            """
             if df is None or df.height == 0:
                 return None
-            pd_df = df.to_pandas()
+
+            sanitized_df = df.with_columns(pl.all().cast(pl.Utf8, strict=False))
+
+            pd_df = sanitized_df.to_pandas()
             if "key" in pd_df.columns:
                 pd_df = pd_df.set_index("key")
             return pd_df.to_html()
