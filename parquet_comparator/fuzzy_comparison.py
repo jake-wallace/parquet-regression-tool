@@ -93,11 +93,9 @@ def fuzzy_compare_dataframes_pl(
         weight = weights[col]
         col_after = f"{col}_after"
 
-        # --- THIS IS THE DEFINITIVE FIX FOR THE INVALIDOPERATIONERROR ---
         dtype_before = df_before.schema.get(col)
         dtype_after = df_after.schema.get(col)
 
-        # The safe string similarity expression is now the default
         string_similarity_expr = pl.struct([col, col_after]).map_elements(
             lambda s, c=col, ca=col_after: jellyfish.jaro_winkler_similarity(
                 str(s.get(c)), str(s.get(ca))
@@ -105,14 +103,11 @@ def fuzzy_compare_dataframes_pl(
             return_dtype=pl.Float64,
         )
 
-        # Only use direct comparison if we are certain it's safe (matching numeric types)
         if dtype_before == dtype_after and dtype_before in pl.NUMERIC_DTYPES:
             comparison_logic = (pl.col(col) == pl.col(col_after)).cast(pl.Float64)
         else:
-            # For everything else (strings, dates, bools, or any mismatched types),
-            # fall back to the robust string similarity comparison.
+
             comparison_logic = string_similarity_expr
-        # --- END OF FIX ---
 
         expr = (
             pl.when(pl.col(col).is_null() & pl.col(col_after).is_null())
