@@ -98,8 +98,8 @@ def compare_dataframes_pl(
                     {
                         "key": key_str,
                         "column": col,
-                        "value_before": row[col_before_name],
-                        "value_after": row[col_after_name],
+                        "value_before": str(row[col_before_name]),
+                        "value_after": str(row[col_after_name]),
                     }
                 )
 
@@ -111,8 +111,8 @@ def compare_dataframes_pl(
             schema={
                 "key": pl.Utf8,
                 "column": pl.Utf8,
-                "value_before": pl.Object,
-                "value_after": pl.Object,
+                "value_before": pl.Utf8,
+                "value_after": pl.Utf8,
             }
         )
 
