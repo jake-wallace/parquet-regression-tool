@@ -231,6 +231,25 @@ def generate_data():
     df_after.to_parquet(path_after / "13_complex_changes.parquet")
     print("Generated: 13_complex_changes.parquet")
 
+    # --- Test Case 14: Unnamed Index Column Present in One File ---
+    # This is a critical test to ensure the tool doesn't crash with a KeyError
+    # when one file has a default pandas index column and the other doesn't.
+    df_before = pd.DataFrame({"record_id": [1, 2], "data": ["A", "B"]})
+
+    # The 'after' file is functionally identical but has the junk '_index_0' column.
+    # The tool should automatically ignore this column and pass the comparison.
+    df_after_with_index = pd.DataFrame(
+        {
+            "record_id": [2, 1],  # Reordered to fail a naive hash
+            "data": ["B", "A"],
+            "_index_0": [100, 101],  # The problematic column
+        }
+    )
+
+    df_before.to_parquet(path_before / "14_unnamed_index_column.parquet")
+    df_after_with_index.to_parquet(path_after / "14_unnamed_index_column.parquet")
+    print("Generated: 14_unnamed_index_column.parquet")
+
     print("\nDummy data generation complete.")
 
 

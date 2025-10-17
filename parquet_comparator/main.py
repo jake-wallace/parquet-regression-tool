@@ -65,22 +65,20 @@ class ParquetComparator:
         self.rules = rules
 
     def run(self, skip_checksum: bool = False) -> ComparisonResult:
-        # Schema check must happen first on the file paths
         schema_diff = _check_schemas(self.file_before, self.file_after)
         if not schema_diff.is_identical:
             click.secho(
-                "  -> Schema mismatch detected. Will proceed with data comparison on common columns.",
+                "  -> Schema mismatch detected. Data comparison will proceed ONLY on common columns.",
                 fg="yellow",
             )
 
         try:
-            # Read files into memory ONCE at the beginning
             df_before = pl.read_parquet(self.file_before)
             df_after = pl.read_parquet(self.file_after)
         except Exception as e:
             return ComparisonResult(status="READ_ERROR", details=str(e))
 
-        # Apply ignore rules before any other processing
+        # Apply any user-defined ignore rules
         if self.rules["ignore_columns"]:
             df_before = df_before.drop(
                 [c for c in self.rules["ignore_columns"] if c in df_before.columns]
@@ -89,34 +87,44 @@ class ParquetComparator:
                 [c for c in self.rules["ignore_columns"] if c in df_after.columns]
             )
 
-        # Determine the single source of truth for columns to compare
         common_cols = list(set(df_before.columns).intersection(set(df_after.columns)))
         df_before_common = df_before.select(common_cols)
         df_after_common = df_after.select(common_cols)
 
-        # Infer keys ONLY from the common columns
         sort_keys = infer_sort_keys_pl(
             df_before_common, self.config["key_uniqueness_threshold"]
         )
 
-        # Run checksum ONLY if schemas are identical and a key was found
         checksum_status = None
-        if not skip_checksum and schema_diff.is_identical and sort_keys:
-            # Pass the already-loaded DataFrames to the checksum function
-            hash_before, _ = generate_checksum_pl(df_before, sort_keys)
-            hash_after, _ = generate_checksum_pl(df_after, sort_keys)
+        if not skip_checksum and sort_keys:
+            # Checksum is run on common columns. We still report IDENTICAL if hashes match,
+            # but the final report will show the schema difference.
+            hash_before, _ = generate_checksum_pl(df_before_common, sort_keys)
+            hash_after, _ = generate_checksum_pl(df_after_common, sort_keys)
 
             if hash_before and hash_after and hash_before == hash_after:
-                return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
+                # If content is identical but schemas differ, it's still a difference.
+                if schema_diff.is_identical:
+                    return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
+                else:
+                    # Mark as a mismatch but proceed to generate a report showing only schema diffs
+                    checksum_status = "CHECKSUM_MATCH_BUT_SCHEMA_DIFFERS"
             else:
                 checksum_status = "CHECKSUM_MISMATCH"
 
         inferred_keys_for_report = []
         status = ""
+        comparison_results = None
 
-        if not sort_keys:
+        if checksum_status == "CHECKSUM_MATCH_BUT_SCHEMA_DIFFERS":
+            # Data is the same on common columns, but schema is different.
+            # Create empty data diffs for the report.
+            comparison_results = ComparisonData(is_identical=True)
+            status = "DIFFERENCES_FOUND"  # Because schema is different
+            inferred_keys_for_report = sort_keys
+        elif not sort_keys:
             click.secho(
-                "  -> No unique key found. Falling back to fuzzy record linkage.",
+                "  -> No unique key found on common columns. Falling back to fuzzy record linkage.",
                 fg="yellow",
             )
             fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
@@ -132,8 +140,8 @@ class ParquetComparator:
 
             status = (
                 "FUZZY_IDENTICAL"
-                if comparison_results.is_identical
-                else "FUZZY_DIFFERENCES_FOUND"
+                if comparison_results.is_identical and schema_diff.is_identical
+                else "DIFFERENCES_FOUND"
             )
             inferred_keys_for_report = ["(Fuzzy Match)"]
         else:
