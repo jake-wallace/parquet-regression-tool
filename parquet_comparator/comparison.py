@@ -22,51 +22,64 @@ def compare_dataframes_pl(
 ) -> ComparisonData:
     """
     Compares two Polars DataFrames, handling schema differences gracefully by
-    casting mismatched types to strings for comparison.
+    only joining and comparing on the intersection of columns.
     """
 
-    df_before_original_cols = df_before.columns
-    df_after_original_cols = df_after.columns
+    before_cols = set(df_before.columns)
+    after_cols = set(df_after.columns)
+    common_cols = list(before_cols.intersection(after_cols))
 
-    common_cols = set(df_before_original_cols).intersection(set(df_after_original_cols))
+    common_sort_keys = [key for key in sort_keys if key in common_cols]
+    if not common_sort_keys:
+        is_identical = schema_diff.is_identical
+        return ComparisonData(is_identical=is_identical)
 
+    df_before_casted = df_before.clone()
+    df_after_casted = df_after.clone()
     for col_name in schema_diff.type_changes:
         if col_name in common_cols:
-            df_before = df_before.with_columns(pl.col(col_name).cast(pl.Utf8))
-            df_after = df_after.with_columns(pl.col(col_name).cast(pl.Utf8))
+            df_before_casted = df_before_casted.with_columns(
+                pl.col(col_name).cast(pl.Utf8)
+            )
+            df_after_casted = df_after_casted.with_columns(
+                pl.col(col_name).cast(pl.Utf8)
+            )
 
-    join_cols = [c for c in df_before.columns if c in df_after.columns]
-
-    merged = df_before.select(join_cols).join(
-        df_after.select(join_cols), on=sort_keys, how="outer", suffix="_after"
+    merged = df_before_casted.select(common_cols).join(
+        df_after_casted.select(common_cols),
+        on=common_sort_keys,
+        how="outer",
+        suffix="_after",
     )
 
-    after_cols_in_join = sort_keys + [
-        f"{col}_after" for col in join_cols if col not in sort_keys
+    after_cols_in_join = common_sort_keys + [
+        f"{col}_after" for col in common_cols if col not in common_sort_keys
     ]
     rename_map_after = {
-        f"{col}_after": col for col in join_cols if col not in sort_keys
+        f"{col}_after": col for col in common_cols if col not in common_sort_keys
     }
     added = (
-        merged.filter(pl.col(join_cols[0]).is_null())
+        merged.filter(pl.col(common_cols[0]).is_null())
         .select(after_cols_in_join)
         .rename(rename_map_after)
     )
 
-    deleted = merged.filter(pl.col(f"{join_cols[0]}_after").is_null()).select(join_cols)
+    deleted = merged.filter(pl.col(f"{common_cols[0]}_after").is_null()).select(
+        common_cols
+    )
 
-    common = merged.drop_nulls()
+    common_rows_df = merged.drop_nulls()
     modified_rows = []
 
-    for col in join_cols:
-        if col in sort_keys:
+    for col in common_cols:
+        if col in common_sort_keys:
             continue
 
         col_before_name, col_after_name = col, f"{col}_after"
         col_before, col_after = pl.col(col_before_name), pl.col(col_after_name)
 
         diff_mask = None
-        dtype = df_before[col].dtype
+        dtype = df_before_casted[col].dtype
 
         if dtype in pl.FLOAT_DTYPES and col not in schema_diff.type_changes:
             diff_mask = (col_before - col_after).abs() > tolerance
@@ -75,10 +88,10 @@ def compare_dataframes_pl(
 
         final_mask = diff_mask & (col_before.is_not_null() | col_after.is_not_null())
 
-        differences = common.filter(final_mask)
+        differences = common_rows_df.filter(final_mask)
         if differences.height > 0:
             for row in differences.to_dicts():
-                key_tuple = tuple(row[k] for k in sort_keys)
+                key_tuple = tuple(row[k] for k in common_sort_keys)
                 key_str = str(key_tuple)
 
                 modified_rows.append(

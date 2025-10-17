@@ -1,4 +1,5 @@
 import polars as pl
+import pandas as pd
 from pathlib import Path
 import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -23,15 +24,12 @@ class ReportGenerator:
             "file_after": str(self.file_after),
             "inferred_keys": self.inferred_keys,
             "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "top_modified_fields": [],  # Default empty list
+            "top_modified_fields": [],
         }
 
+        status = "IDENTICAL"
         if not self.schema_diff.is_identical:
-            summary["status"] = "SCHEMA_DIFFERENCES_FOUND"
-        elif self.results and not self.results.is_identical:
-            summary["status"] = "DATA_DIFFERENCES_FOUND"
-        else:
-            summary["status"] = "IDENTICAL"
+            status = "SCHEMA_DIFFERENCES_FOUND"
 
         if self.results:
             rows_added = self.results.added.height
@@ -43,13 +41,23 @@ class ReportGenerator:
             )
 
             if self.results.modified.height > 0:
-                top_fields = (
+                top_fields_df = (
                     self.results.modified.group_by("column")
                     .agg(pl.count().alias("change_count"))
-                    .sort("change_count", descending=True)
+                    .sort("change_count", "column", descending=[True, False])
                     .head(5)
-                ).to_dicts()
-                summary["top_modified_fields"] = top_fields
+                )
+                summary["top_modified_fields"] = top_fields_df.to_dicts()
+
+            if not self.results.is_identical:
+                if status == "IDENTICAL":  # Only update if not already a schema diff
+                    is_fuzzy = (
+                        self.inferred_keys and self.inferred_keys[0] == "(Fuzzy Match)"
+                    )
+                    if is_fuzzy:
+                        status = "FUZZY_DIFFERENCES_FOUND"
+                    else:
+                        status = "DATA_DIFFERENCES_FOUND"
 
             summary.update(
                 {
@@ -61,6 +69,7 @@ class ReportGenerator:
                 }
             )
 
+        summary["status"] = status
         return summary
 
     def generate_html_report(self) -> Path:

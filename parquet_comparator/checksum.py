@@ -1,24 +1,32 @@
 import polars as pl
-from pathlib import Path
 from typing import Tuple, List, Optional
-
-from .inference import infer_sort_keys_pl
 
 
 def generate_checksum_pl(
-    file_path: Path, config: dict, rules: dict
+    df: pl.DataFrame, sort_keys: list
 ) -> Tuple[Optional[str], Optional[List[str]]]:
-    df = pl.read_parquet(file_path)
+    """
+    Generates an order-independent checksum for a Polars DataFrame.
 
-    if rules["ignore_columns"]:
-        df = df.drop(rules["ignore_columns"])
+    Args:
+        df: The pre-loaded DataFrame to hash.
+        sort_keys: The list of keys to sort by before hashing.
 
-    sort_keys = infer_sort_keys_pl(df, config.get("key_uniqueness_threshold", 0.99))
-    if not sort_keys:
+    Returns:
+        A tuple containing the checksum hash and the keys used.
+    """
+    if not sort_keys or not all(key in df.columns for key in sort_keys):
+        # Safety check: if keys aren't in the dataframe, we can't sort.
         return None, None
 
-    df_sorted = df.sort(by=sort_keys)
+    try:
+        # Sort the DataFrame by the provided keys
+        df_sorted = df.sort(by=sort_keys)
 
-    checksum = df_sorted.hash_rows(seed=42).to_list()[0]
+        # Polars' hash_rows is extremely fast and creates a single hash for the DF
+        checksum = df_sorted.hash_rows(seed=42)[0]
 
-    return str(checksum), sort_keys
+        return str(checksum), sort_keys
+    except pl.ColumnNotFoundError:
+        # This catch is a fallback, but the check above should prevent it.
+        return None, None

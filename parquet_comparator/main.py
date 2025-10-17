@@ -20,19 +20,14 @@ class ComparisonResult:
 
 
 def _check_schemas(file_before: Path, file_after: Path) -> SchemaDiff:
-    """
-    Compares two schemas and returns a structured SchemaDiff object
-    detailing all differences found.
-    """
+    """Compares two schemas and returns a structured SchemaDiff object."""
     schema_before = pq.read_schema(file_before)
     schema_after = pq.read_schema(file_after)
 
     if schema_before.equals(schema_after):
         return SchemaDiff(is_identical=True)
 
-    names_before = set(schema_before.names)
-    names_after = set(schema_after.names)
-
+    names_before, names_after = set(schema_before.names), set(schema_after.names)
     added = {
         name: str(schema_after.field(name).type) for name in names_after - names_before
     }
@@ -42,8 +37,7 @@ def _check_schemas(file_before: Path, file_after: Path) -> SchemaDiff:
 
     type_changes = {}
     for name in names_before.intersection(names_after):
-        field_before = schema_before.field(name)
-        field_after = schema_after.field(name)
+        field_before, field_after = schema_before.field(name), schema_after.field(name)
         if not field_before.equals(field_after):
             type_changes[name] = (str(field_before.type), str(field_after.type))
 
@@ -71,42 +65,51 @@ class ParquetComparator:
         self.rules = rules
 
     def run(self, skip_checksum: bool = False) -> ComparisonResult:
+        # Schema check must happen first on the file paths
         schema_diff = _check_schemas(self.file_before, self.file_after)
         if not schema_diff.is_identical:
             click.secho(
-                "  -> Schema mismatch detected. Will proceed with data comparison.",
+                "  -> Schema mismatch detected. Will proceed with data comparison on common columns.",
                 fg="yellow",
             )
 
-        checksum_status, inferred_keys = None, []
-        if not skip_checksum and schema_diff.is_identical:
-            checksum_status, inferred_keys = generate_checksum_pl(
-                self.file_before, self.config, self.rules
-            )
-            if checksum_status == "CHECKSUM_MATCH":
-                return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
-            if checksum_status == "CHECKSUM_MISMATCH":
-                pass  # Continue to detailed diff
-
         try:
+            # Read files into memory ONCE at the beginning
             df_before = pl.read_parquet(self.file_before)
             df_after = pl.read_parquet(self.file_after)
         except Exception as e:
             return ComparisonResult(status="READ_ERROR", details=str(e))
 
+        # Apply ignore rules before any other processing
         if self.rules["ignore_columns"]:
-            cols_to_drop_before = [
-                c for c in self.rules["ignore_columns"] if c in df_before.columns
-            ]
-            cols_to_drop_after = [
-                c for c in self.rules["ignore_columns"] if c in df_after.columns
-            ]
-            df_before = df_before.drop(cols_to_drop_before)
-            df_after = df_after.drop(cols_to_drop_after)
+            df_before = df_before.drop(
+                [c for c in self.rules["ignore_columns"] if c in df_before.columns]
+            )
+            df_after = df_after.drop(
+                [c for c in self.rules["ignore_columns"] if c in df_after.columns]
+            )
 
-        sort_keys = inferred_keys or infer_sort_keys_pl(
-            df_before, self.config["key_uniqueness_threshold"]
+        # Determine the single source of truth for columns to compare
+        common_cols = list(set(df_before.columns).intersection(set(df_after.columns)))
+        df_before_common = df_before.select(common_cols)
+        df_after_common = df_after.select(common_cols)
+
+        # Infer keys ONLY from the common columns
+        sort_keys = infer_sort_keys_pl(
+            df_before_common, self.config["key_uniqueness_threshold"]
         )
+
+        # Run checksum ONLY if schemas are identical and a key was found
+        checksum_status = None
+        if not skip_checksum and schema_diff.is_identical and sort_keys:
+            # Pass the already-loaded DataFrames to the checksum function
+            hash_before, _ = generate_checksum_pl(df_before, sort_keys)
+            hash_after, _ = generate_checksum_pl(df_after, sort_keys)
+
+            if hash_before and hash_after and hash_before == hash_after:
+                return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
+            else:
+                checksum_status = "CHECKSUM_MISMATCH"
 
         inferred_keys_for_report = []
         status = ""
@@ -117,8 +120,7 @@ class ParquetComparator:
                 fg="yellow",
             )
             fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
-            pd_before = df_before.to_pandas()
-            pd_after = df_after.to_pandas()
+            pd_before, pd_after = df_before.to_pandas(), df_after.to_pandas()
             pd_results = fuzzy_compare_pandas(pd_before, pd_after, fuzzy_threshold)
 
             comparison_results = ComparisonData(
