@@ -20,7 +20,7 @@ class ComparisonResult:
 
 
 def _check_schemas(file_before: Path, file_after: Path) -> SchemaDiff:
-    """Compares two schemas and returns a structured SchemaDiff object."""
+    """Compares two original schemas and returns a structured SchemaDiff object."""
     schema_before = pq.read_schema(file_before)
     schema_after = pq.read_schema(file_after)
 
@@ -65,6 +65,7 @@ class ParquetComparator:
         self.rules = rules
 
     def run(self, skip_checksum: bool = False) -> ComparisonResult:
+        # Step 1: Always check the full, original schemas first to identify all differences.
         schema_diff = _check_schemas(self.file_before, self.file_after)
         if not schema_diff.is_identical:
             click.secho(
@@ -73,41 +74,43 @@ class ParquetComparator:
             )
 
         try:
-            df_before = pl.read_parquet(self.file_before)
-            df_after = pl.read_parquet(self.file_after)
+            df_before_raw = pl.read_parquet(self.file_before)
+            df_after_raw = pl.read_parquet(self.file_after)
         except Exception as e:
             return ComparisonResult(status="READ_ERROR", details=str(e))
 
         # Apply any user-defined ignore rules
         if self.rules["ignore_columns"]:
-            df_before = df_before.drop(
-                [c for c in self.rules["ignore_columns"] if c in df_before.columns]
+            df_before_raw = df_before_raw.drop(
+                [c for c in self.rules["ignore_columns"] if c in df_before_raw.columns]
             )
-            df_after = df_after.drop(
-                [c for c in self.rules["ignore_columns"] if c in df_after.columns]
+            df_after_raw = df_after_raw.drop(
+                [c for c in self.rules["ignore_columns"] if c in df_after_raw.columns]
             )
 
-        common_cols = list(set(df_before.columns).intersection(set(df_after.columns)))
-        df_before_common = df_before.select(common_cols)
-        df_after_common = df_after.select(common_cols)
+        # Step 2: Determine the "common ground" and create safe DataFrames for all subsequent operations.
+        common_cols = list(
+            set(df_before_raw.columns).intersection(set(df_after_raw.columns))
+        )
+        df_before = df_before_raw.select(common_cols)
+        df_after = df_after_raw.select(common_cols)
 
+        # Step 3: Infer keys ONLY from the safe, common columns.
         sort_keys = infer_sort_keys_pl(
-            df_before_common, self.config["key_uniqueness_threshold"]
+            df_before, self.config["key_uniqueness_threshold"]
         )
 
+        # Step 4: Run checksum ONLY if a key was found. Pass the SAFE common-column DataFrames.
         checksum_status = None
         if not skip_checksum and sort_keys:
-            # Checksum is run on common columns. We still report IDENTICAL if hashes match,
-            # but the final report will show the schema difference.
-            hash_before, _ = generate_checksum_pl(df_before_common, sort_keys)
-            hash_after, _ = generate_checksum_pl(df_after_common, sort_keys)
+            # Pass the common-column dataframes to ensure checksum is safe.
+            hash_before, _ = generate_checksum_pl(df_before, sort_keys)
+            hash_after, _ = generate_checksum_pl(df_after, sort_keys)
 
             if hash_before and hash_after and hash_before == hash_after:
-                # If content is identical but schemas differ, it's still a difference.
                 if schema_diff.is_identical:
                     return ComparisonResult(status="IDENTICAL (CHECKSUM_MATCH)")
                 else:
-                    # Mark as a mismatch but proceed to generate a report showing only schema diffs
                     checksum_status = "CHECKSUM_MATCH_BUT_SCHEMA_DIFFERS"
             else:
                 checksum_status = "CHECKSUM_MISMATCH"
@@ -118,7 +121,6 @@ class ParquetComparator:
 
         if checksum_status == "CHECKSUM_MATCH_BUT_SCHEMA_DIFFERS":
             # Data is the same on common columns, but schema is different.
-            # Create empty data diffs for the report.
             comparison_results = ComparisonData(is_identical=True)
             status = "DIFFERENCES_FOUND"  # Because schema is different
             inferred_keys_for_report = sort_keys
@@ -128,6 +130,7 @@ class ParquetComparator:
                 fg="yellow",
             )
             fuzzy_threshold = self.config.get("fuzzy_match_threshold", 0.8)
+            # Pass the SAFE common-column dataframes to the fuzzy matcher
             pd_before, pd_after = df_before.to_pandas(), df_after.to_pandas()
             pd_results = fuzzy_compare_pandas(pd_before, pd_after, fuzzy_threshold)
 
@@ -145,6 +148,7 @@ class ParquetComparator:
             )
             inferred_keys_for_report = ["(Fuzzy Match)"]
         else:
+            # Pass the SAFE common-column dataframes to the precise comparator
             comparison_results = compare_dataframes_pl(
                 df_before,
                 df_after,
