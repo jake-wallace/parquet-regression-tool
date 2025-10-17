@@ -156,7 +156,6 @@ def fuzzy_compare_dataframes_pl(
                         }
                     )
 
-    # --- THIS IS THE DEFINITIVE FIX FOR THE NODATAERROR ---
     modified = None
     if modified_rows:
         modified = pl.from_dicts(modified_rows)
@@ -170,7 +169,6 @@ def fuzzy_compare_dataframes_pl(
                 "value_after": pl.Utf8,
             }
         )
-    # --- END OF FIX ---
 
     is_identical = added.height == 0 and deleted.height == 0 and modified.height == 0
     return ComparisonData(
