@@ -1,5 +1,4 @@
 import polars as pl
-import pandas as pd
 from pathlib import Path
 import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -80,13 +79,21 @@ class ReportGenerator:
 
         def to_html(df: pl.DataFrame):
             """
-            Helper to safely convert a Polars DF to HTML via Pandas.
-            This is the final safeguard against type errors.
+            Helper to safely convert ANY Polars DF to HTML via Pandas.
+            This contains the definitive fix for all ArrowTypeErrors.
             """
             if df is None or df.height == 0:
                 return None
 
-            sanitized_df = df.with_columns(pl.all().cast(pl.Utf8, strict=False))
+            # --- THIS IS THE BULLETPROOF SYNTAX FIX ---
+            # The correct method for an expression is .map_elements().
+            # This robustly applies the `str` function to every element in every column,
+            # guaranteeing a safe conversion to pandas.
+            sanitization_expressions = [
+                pl.col(c).map_elements(str, return_dtype=pl.Utf8) for c in df.columns
+            ]
+            sanitized_df = df.with_columns(sanitization_expressions)
+            # --- END OF FIX ---
 
             pd_df = sanitized_df.to_pandas()
             if "key" in pd_df.columns:
